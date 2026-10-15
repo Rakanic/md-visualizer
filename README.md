@@ -1,6 +1,6 @@
-# mdviz
-
 **Everything in this repo was written by an agent, except for this sentence.**
+
+# mdviz
 
 **Drop in long markdown files and get interactive diagrams, slides, and PDFs.**
 
