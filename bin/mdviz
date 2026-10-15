@@ -1,0 +1,191 @@
+#!/usr/bin/env node
+/* mdviz CLI — open, build, and export markdown visualizations.
+ *   mdviz [open] [files…]               open in the mdviz desktop app if installed, else the browser
+ *   mdviz build files… -o out.html      one self-contained, shareable .html
+ *   mdviz pdf files… -o out.pdf [--doc] slides (default) or the whole document as a PDF
+ *   mdviz drawio files… -o out.drawio   editable draw.io diagram (outline, timeline, board)
+ *   mdviz json files…                   the parsed model, for scripts and agents
+ * Options: --view overview|map|timeline|board|data|graph|slides|read   --browser   --no-open
+ */
+'use strict';
+const fs = require('fs');
+const path = require('path');
+const os = require('os');
+const { execFileSync, spawnSync } = require('child_process');
+
+const ROOT = path.resolve(__dirname, '..');
+const APP = path.join(ROOT, 'app');
+const MDV = require(path.join(APP, 'core.js'));
+const VIEWS = ['overview', 'map', 'timeline', 'board', 'data', 'graph', 'slides', 'read'];
+
+function usage(code) {
+  const head = fs.readFileSync(__filename, 'utf8').split('\n').slice(1, 10).map((l) => l.replace(/^ ?\*\/? ?|^\/\* ?/, '')).join('\n');
+  (code ? process.stderr : process.stdout).write(head.trim() + '\n');
+  process.exit(code);
+}
+
+function parseArgs(argv) {
+  const a = { cmd: 'open', files: [], out: null, view: null, doc: false, open: true, browser: false };
+  const cmds = ['open', 'build', 'pdf', 'drawio', 'json', 'help'];
+  if (argv[0] && cmds.includes(argv[0])) a.cmd = argv.shift();
+  for (let i = 0; i < argv.length; i++) {
+    const x = argv[i];
+    if (x === '-o' || x === '--out') a.out = argv[++i];
+    else if (x === '--view') a.view = argv[++i];
+    else if (x === '--doc') a.doc = true;
+    else if (x === '--slides') a.doc = false;
+    else if (x === '--no-open') a.open = false;
+    else if (x === '--browser') a.browser = true;
+    else if (x === '-h' || x === '--help') a.cmd = 'help';
+    else if (x.startsWith('-')) { console.error(`unknown option ${x}`); usage(2); }
+    else a.files.push(x);
+  }
+  if (a.view && !VIEWS.includes(a.view)) { console.error(`--view must be one of ${VIEWS.join(', ')}`); process.exit(2); }
+  return a;
+}
+
+function expandFiles(list) {
+  const out = [];
+  for (const f of list) {
+    if (!fs.existsSync(f)) { console.error(`not found: ${f}`); process.exit(1); }
+    if (fs.statSync(f).isDirectory()) {
+      for (const n of fs.readdirSync(f).sort()) if (/\.(md|markdown)$/i.test(n)) out.push(path.join(f, n));
+    } else out.push(f);
+  }
+  return out;
+}
+
+const MIME = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', gif: 'image/gif', svg: 'image/svg+xml', webp: 'image/webp' };
+// local images referenced by the markdown become data: URIs so the output stands alone
+function inlineImages(text, dir) {
+  const toData = (src) => {
+    if (/^(https?:|data:|#)/i.test(src)) return null;
+    const p = path.resolve(dir, decodeURIComponent(src.split(/[?#]/)[0]));
+    const ext = path.extname(p).slice(1).toLowerCase();
+    if (!MIME[ext] || !fs.existsSync(p)) return null;
+    return `data:${MIME[ext]};base64,${fs.readFileSync(p).toString('base64')}`;
+  };
+  return text
+    .replace(/(!\[[^\]]*\]\()([^)\s]+)((?:\s+"[^"]*")?\))/g, (m, a, src, b) => { const d = toData(src); return d ? a + d + b : m; })
+    .replace(/(<img\b[^>]*\bsrc=")([^"]+)(")/gi, (m, a, src, b) => { const d = toData(src); return d ? a + d + b : m; });
+}
+
+function loadDocs(files) {
+  return files.map((f) => ({ name: path.basename(f), text: inlineImages(fs.readFileSync(f, 'utf8'), path.dirname(path.resolve(f))) }));
+}
+
+// inline <script> bodies can't contain "</script", "<script" or "<!--" (the HTML parser would end or swallow them);
+// \x3C is "<" in every JS context those appear in (strings, regexes, templates)
+const safeScript = (js) => js.replace(/<(\/script|script|!--)/gi, '\\x3C$1');
+function buildHtml(docs, opts) {
+  opts = opts || {};
+  let html = fs.readFileSync(path.join(APP, 'index.html'), 'utf8');
+  const css = fs.readFileSync(path.join(APP, 'app.css'), 'utf8');
+  html = html.replace('<link rel="stylesheet" href="app.css">', () => `<style>\n${css}\n</style>`);
+  const needsMermaid = docs.some((d) => /```mermaid/i.test(d.text));
+  html = html.replace(/<script src="([^"]+)"><\/script>/g, (m, src) => {
+    const js = fs.readFileSync(path.join(APP, src), 'utf8');
+    let extra = '';
+    if (src === 'vendor/marked.min.js') {
+      if (needsMermaid && !opts.linkVendor) extra = `<script>\n${safeScript(fs.readFileSync(path.join(APP, 'vendor/mermaid.min.js'), 'utf8'))}\n</script>\n`;
+      if (opts.linkVendor) extra = `<script>window.MDV_VENDOR = ${JSON.stringify('file://' + path.join(APP, 'vendor') + '/')};</script>\n`;
+    }
+    return `${extra}<script>\n${safeScript(js)}\n</script>`;
+  });
+  const payload = { docs, view: opts.view || null, print: opts.print || null };
+  html = html.replace('<script id="mdviz-data" type="application/json">null</script>',
+    () => `<script id="mdviz-data" type="application/json">${JSON.stringify(payload).replace(/</g, '\\u003c')}</script>`);
+  const title = docs.length === 1 ? MDV.parseDoc(docs[0].name, docs[0].text, 0).title : `mdviz · ${docs.length} documents`;
+  html = html.replace('<title>mdviz</title>', `<title>${title.replace(/[<&]/g, '')}</title>`);
+  return html;
+}
+
+function openPath(p) {
+  const cmd = process.platform === 'darwin' ? 'open' : process.platform === 'win32' ? 'cmd' : 'xdg-open';
+  const args = process.platform === 'win32' ? ['/c', 'start', '', p] : [p];
+  spawnSync(cmd, args, { stdio: 'ignore' });
+}
+
+function findChrome() {
+  const c = [process.env.CHROME,
+    '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+    '/Applications/Chromium.app/Contents/MacOS/Chromium',
+    '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+    '/Applications/Brave Browser.app/Contents/MacOS/Brave Browser',
+    '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].filter(Boolean);
+  return c.find((p) => fs.existsSync(p));
+}
+
+function defaultOut(files, ext) {
+  if (files.length === 1) return files[0].replace(/\.(md|markdown)$/i, '') + ext;
+  return 'mdviz' + ext;
+}
+
+function main() {
+  const a = parseArgs(process.argv.slice(2));
+  if (a.cmd === 'help') usage(0);
+  const files = expandFiles(a.files);
+  if (a.cmd !== 'open' && !files.length) { console.error('no input .md files'); usage(2); }
+  const docs = loadDocs(files);
+
+  if (a.cmd === 'open') {
+    const desktop = process.platform === 'darwin' && !a.browser &&
+      ['/Applications/mdviz.app', path.join(os.homedir(), 'Applications/mdviz.app')].find((p) => fs.existsSync(path.join(p, 'Contents/Resources/app/index.html')));
+    if (desktop) {
+      spawnSync('open', ['-a', desktop, ...files.map((f) => path.resolve(f))], { stdio: 'ignore' });
+      return;
+    }
+    if (!docs.length) return openPath(path.join(APP, 'index.html'));
+    const out = path.join(os.tmpdir(), `mdviz-${Date.now().toString(36)}.html`);
+    fs.writeFileSync(out, buildHtml(docs, { view: a.view, linkVendor: true }));
+    openPath(out);
+    console.log(out);
+    return;
+  }
+  if (a.cmd === 'build') {
+    const out = a.out || defaultOut(files, '.html');
+    fs.writeFileSync(out, buildHtml(docs, { view: a.view }));
+    console.log(`wrote ${out} (${(fs.statSync(out).size / 1024).toFixed(0)} KB)`);
+    if (a.open && process.stdout.isTTY && a.view) openPath(path.resolve(out));
+    return;
+  }
+  if (a.cmd === 'drawio') {
+    const parsed = docs.map((d, i) => MDV.parseDoc(d.name, d.text, i));
+    const out = a.out || defaultOut(files, '.drawio');
+    fs.writeFileSync(out, MDV.toDrawio(parsed));
+    console.log(`wrote ${out} (pages: Outline, Timeline, Board)`);
+    return;
+  }
+  if (a.cmd === 'json') {
+    const parsed = docs.map((d, i) => MDV.parseDoc(d.name, d.text, i));
+    const slim = parsed.map((d) => ({
+      name: d.name, title: d.title, span: d.span, target: d.target, stats: MDV.stats(d),
+      sections: d.sections.map((s) => ({ id: s.id, level: s.level, num: s.num, title: s.title, date: s.when, parent: s.parent, words: s.words, kinds: s.kinds })),
+      items: d.items.map((b) => ({ kind: b.kind, section: b.sectionId, text: b.plain })),
+      tables: d.tables.map((t) => ({ id: t.id, section: t.sectionId, header: t.header, columns: t.cols.map((c) => ({ name: c.name, type: c.type, unit: c.unit })), rows: t.rows.map((r) => r.map((c) => c.plain)) })),
+      references: Object.values(d.entities).sort((x, y) => y.count - x.count).map((e) => ({ key: e.key, type: e.type, count: e.count, changes: e.changes })),
+      xrefs: d.xrefs,
+    }));
+    const text = JSON.stringify(slim.length === 1 ? slim[0] : slim, null, 1);
+    if (a.out) fs.writeFileSync(a.out, text); else process.stdout.write(text + '\n');
+    return;
+  }
+  if (a.cmd === 'pdf') {
+    const chrome = findChrome();
+    if (!chrome) { console.error('pdf needs Chrome, Chromium, Edge, or Brave (set CHROME=/path/to/binary)'); process.exit(1); }
+    const out = path.resolve(a.out || defaultOut(files, a.doc ? '.pdf' : '.slides.pdf'));
+    const tmp = path.join(os.tmpdir(), `mdviz-print-${Date.now().toString(36)}.html`);
+    fs.writeFileSync(tmp, buildHtml(docs, { view: a.doc ? 'read' : 'slides', print: a.doc ? 'read' : 'slides' }));
+    const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'mdviz-chrome-'));
+    try {
+      execFileSync(chrome, ['--headless=new', '--disable-gpu', '--no-first-run', `--user-data-dir=${profile}`, '--no-pdf-header-footer',
+        '--run-all-compositor-stages-before-draw', '--virtual-time-budget=20000', `--print-to-pdf=${out}`, 'file://' + tmp], { stdio: 'pipe', timeout: 120000 });
+    } finally {
+      fs.rmSync(profile, { recursive: true, force: true });
+      fs.rmSync(tmp, { force: true });
+    }
+    console.log(`wrote ${out}`);
+    return;
+  }
+}
+main();

@@ -1,0 +1,14 @@
+{
+  "name": "mdviz",
+  "owner": {
+    "name": "mdviz"
+  },
+  "plugins": [
+    {
+      "name": "mdviz",
+      "source": "./",
+      "description": "The project-log skill: diagram-first project timelines that mdviz renders."
+    }
+  ],
+  "description": "Diagram-first project logs and the mdviz viewer."
+}

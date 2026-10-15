@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>mdviz</title>
+<link rel="stylesheet" href="app.css">
+</head>
+<body>
+<header class="top">
+  <button id="toggle-side" class="icon-btn" title="Show / hide files" aria-label="Files">☰</button>
+  <div class="brand">md<b>viz</b></div>
+  <nav id="tabs" role="tablist"></nav>
+  <div id="more" class="menu"></div>
+  <div class="spacer"></div>
+  <input id="search" type="search" placeholder="Search  ( / )" aria-label="Search">
+  <div class="menu">
+    <button id="export-btn" class="btn">Export ▾</button>
+    <div id="export-menu" class="menu-pop" hidden>
+      <button data-export="drawio">draw.io diagram (.drawio)</button>
+      <button data-export="print">Print / PDF — this view</button>
+      <button data-export="slides-pdf">Slides → PDF</button>
+      <button data-export="read-pdf">Document → PDF</button>
+      <button data-export="json">Parsed model (.json)</button>
+    </div>
+  </div>
+  <button id="theme-btn" class="icon-btn" title="Light / dark" aria-label="Theme">◐</button>
+</header>
+<div class="layout">
+  <aside id="side">
+    <div id="drop" class="drop">
+      <div class="drop-title">Drop .md files</div>
+      <div class="drop-sub">or</div>
+      <button id="pick" class="btn">Choose files…</button>
+      <input id="file" type="file" accept=".md,.markdown,.mdx,.txt" multiple hidden>
+    </div>
+    <div class="side-label">Documents</div>
+    <ul id="doclist"></ul>
+    <div class="side-foot">Checked documents are combined in every view.</div>
+  </aside>
+  <main id="main"></main>
+</div>
+<aside id="drawer" hidden>
+  <div class="drawer-bar"><span id="drawer-crumbs"></span><button id="drawer-close" class="icon-btn" aria-label="Close">✕</button></div>
+  <div id="drawer-body"></div>
+</aside>
+<div id="tip" class="tip" hidden></div>
+<div id="veil">Drop to visualize</div>
+<div id="print-root"></div>
+<div id="zoom" hidden></div>
+<script id="mdviz-data" type="application/json">null</script>
+<script src="vendor/marked.min.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
+</body>
+</html>

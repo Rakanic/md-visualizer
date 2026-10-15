@@ -1,0 +1,5 @@
+{
+  "name": "mdviz",
+  "version": "1.0.0",
+  "description": "Diagram-first project logs: one timeline per project, with Before/After diagrams, short decisions, and interactive failure-and-fix examples. Renders with mdviz."
+}
